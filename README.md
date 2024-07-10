@@ -1,0 +1,1 @@
+Utilizing the Notion API and TMDB API to find movie and TV show Data, this program queries a Notion Database looking for entries that end in a semicolon and then searches TMDB to populate the missing properties in the Notion Database
