@@ -1,3 +1,4 @@
+import json
 import os
 
 import tmdbsimple as tmdb
@@ -6,24 +7,34 @@ from notion_client import Client
 
 from ResultsExceptions import NoEntriesFoundException
 
-# Load environment variables from .env file
+# load environment variables from .env file
 load_dotenv()
 
-# Constants
+# constants
 NOTION_API_KEY = os.getenv("NOTION_API_KEY")
 DATABASE_ID = os.getenv("DATABASE_ID")
 TMDB_API_KEY = os.getenv("TMDB_API_KEY")
+
+# language codes
+with open("utils/iso_639_1_languages.json", "r") as json_file:
+    iso_639_1_languages = json.load(json_file)
 
 # Initialize Notion client and TMDB API
 notion = Client(auth=NOTION_API_KEY)
 tmdb.API_KEY = TMDB_API_KEY
 
 
-def get_notion_entries():
-    query = {
-        "database_id": DATABASE_ID,
-        "filter": {"property": "Name", "title": {"ends_with": ";"}},
-    }
+def get_notion_entries(title=None):
+    if title:
+        query = {
+            "database_id": DATABASE_ID,
+            "filter": {"property": "Title", "title": {"equals": title}},
+        }
+    else:
+        query = {
+            "database_id": DATABASE_ID,
+            "filter": {"property": "Title", "title": {"ends_with": ";"}},
+        }
     response = notion.databases.query(**query)
     return response
 
@@ -35,9 +46,9 @@ def search_tmdb(title):
 
 
 def update_notion_page(page_id, tmdb_data):
-    # Prepare the data to update in Notion
+    # prepare the data to update in Notion
     update_data = {
-        "Name": {"title": [{"text": {"content": tmdb_data.get("title", "")}}]},
+        "Title": {"title": [{"text": {"content": tmdb_data.get("title", None)}}]},
         "Type": {"select": {"name": tmdb_data.get("type")}},
         "TMDB Rating": (
             {"number": round(tmdb_data.get("vote_average"), 1)}
@@ -60,7 +71,7 @@ def update_notion_page(page_id, tmdb_data):
         },
         "Trailer": {"url": tmdb_data.get("trailer_url", None)},
         "IMDb Page": (
-            {"url": "https://www.imdb.com/title/{}/".format(tmdb_data.get("imdb_id"))}
+            {"url": f"https://www.imdb.com/title/{tmdb_data.get('imdb_id')}/"}
             if tmdb_data.get("imdb_id")
             else None
         ),
@@ -80,7 +91,7 @@ def update_notion_page(page_id, tmdb_data):
                 {"text": {"content": ", ".join(tmdb_data.get("producers", []))}}
             ]
         },
-        "Country of origin": (
+        "Country of Origin": (
             {
                 "rich_text": [
                     {
@@ -95,93 +106,110 @@ def update_notion_page(page_id, tmdb_data):
         ),
         "Content Rating": {"select": {"name": tmdb_data.get("content_rating", None)}},
         "IMDb ID": {"rich_text": [{"text": {"content": tmdb_data.get("imdb_id", "")}}]},
-        "IMG": {
+        "Poster": {
             "files": [
                 {
                     "type": "external",
                     "name": "Poster",
-                    "external": {"url": tmdb_data.get("poster_path", "")},
+                    "external": {"url": tmdb_data.get("poster_path", None)},
                 }
             ]
         },
         "Episodes": {"number": tmdb_data.get("number_of_episodes", None)},
         "Seasons": {"number": tmdb_data.get("number_of_seasons", None)},
         "Status": {"select": {"name": tmdb_data.get("status", "")}},
-        "Language": {"select": {"name": tmdb_data.get("original_language", "")}},
-        "Original Name": (
+        "Original Language": {
+            "select": {
+                "name": iso_639_1_languages[tmdb_data.get("original_language", "")]
+            }
+        },
+        "Original Title": (
             {"rich_text": [{"text": {"content": tmdb_data.get("original_title")}}]}
             if tmdb_data.get("original_title") != tmdb_data.get("title")
             else None
         ),
-        # Default values for specific properties
+        # default values for specific properties
         "Watch Status": {"select": {"name": "Unwatched"}},
-        "Rewatch?": {"checkbox": False},
+        "Rewatch": {"checkbox": False},
         "Rating": {"select": {"name": "🤷‍♂️"}},
         "Format": {"select": {"name": "Unowned"}},
     }
 
-    # Filter out None values
+    # filter out None values
     update_data = {k: v for k, v in update_data.items() if v}
 
-    # Update the page in Notion
+    # update the page in Notion
     notion.pages.update(page_id, properties=update_data)
+    # set the icon and cover
     notion.pages.update(
         page_id=page_id,
-        icon={"type": "external", "external": {"url": tmdb_data["poster_path"]}},
+        icon={"type": "external", "external": {"url": tmdb_data.get("poster_path")}},
     )
     notion.pages.update(
         page_id=page_id,
-        cover={"type": "external", "external": {"url": tmdb_data["cover_url"]}},
+        cover={"type": "external", "external": {"url": tmdb_data.get("backdrop_path")}},
     )
 
 
-def additional_movie_info(movie):
-    movie_details = {}
-    movie_details["type"] = "Movie"
-    movie_details["directors"] = []
-    movie_details["producers"] = []
-    movie_details["cast"] = []
-    movie_details["content_rating"] = None
-    movie_details["poster_path"] = None
-    movie_details["cover_url"] = None
+def get_movie_data(tmdb_result):
+    movie = tmdb.Movies(tmdb_result["id"])
+    movie_data = movie.info(
+        append_to_response=["watch/providers,credits,release_dates,videos"]
+    )
 
-    credits = movie.credits()
-    releases = movie.releases()
+    # media type
+    movie_data["type"] = tmdb_result["media_type"].capitalize()
 
-    # director/producer
-    for member in credits["crew"]:
+    # directors & producers
+    for member in movie_data["credits"]["crew"]:
         if member["job"] == "Director":
-            movie_details["directors"].append(member["name"])
+            movie_data.setdefault("directors", []).append(member["name"])
         elif member["job"] == "Producer":
-            movie_details["producers"].append(member["name"])
+            movie_data.setdefault("producers", []).append(member["name"])
 
     # cast members
-    for member in credits["cast"]:
+    for member in movie_data["credits"]["cast"]:
         if (
             member["known_for_department"] == "Acting"
             and "(uncredited)" not in member["character"]
         ):
-            movie_details["cast"].append(member["name"])
+            movie_data.setdefault("cast", []).append(member["name"])
 
     # content rating
-    for country in releases["countries"]:
-        if country["iso_3166_1"] == "US":
-            movie_details["content_rating"] = country["certification"]
+    for result in movie_data["release_dates"]["results"]:
+        if result["iso_3166_1"] == "US":
+            for date in result["release_dates"]:
+                if date["certification"]:
+                    movie_data["content_rating"] = date["certification"]
+                    break
+            if movie_data["content_rating"]:
+                break
 
-    # IMG
-    for image in movie.images()["posters"]:
-        if image["iso_639_1"] == "en":
-            movie_details["poster_path"] = (
-                f"https://image.tmdb.org/t/p/w1280{image['file_path']}"
-            )
-            break
-
-    # backdrop
-    movie_details["cover_url"] = (
-        f'https://image.tmdb.org/t/p/w3840_and_h2160_bestv2{movie.images()["backdrops"][0]["file_path"]}'
+    # images
+    movie_data["backdrop_path"] = (
+        f'https://image.tmdb.org/t/p/original{movie_data["backdrop_path"]}'
+    )
+    movie_data["poster_path"] = (
+        f'https://image.tmdb.org/t/p/original{movie_data["poster_path"]}'
     )
 
-    return movie_details
+    # official trailer
+    for trailer in movie_data["videos"]["results"]:
+        if trailer["official"] == True:
+            movie_data["trailer_url"] = (
+                f"https://www.youtube.com/watch?v={trailer['key']}"
+            )
+
+    # vod providers
+    movie_data["providers"] = [
+        provider["provider_name"]
+        for provider in movie_data.get("watch/providers", {})
+        .get("results", {})
+        .get("US", {})
+        .get("rent", [])
+    ]
+
+    return movie_data
 
 
 def main():
@@ -192,32 +220,25 @@ def main():
         print(f"Error fetching Notion database: {e}")
 
     if not notion_entries:
-        raise NoEntriesFoundException()
+        raise NoEntriesFoundException("No entries found in Notion.")
 
     for entry in notion_entries:
-        title = entry["properties"]["Name"]["title"][0]["text"]["content"]
+        title = entry["properties"]["Title"]["title"][0]["text"]["content"].rstrip(";")
         page_id = entry["id"]
 
         # Search TMDB
-        tmdb_result = search_tmdb(title.rstrip(";"))
+        tmdb_result = search_tmdb(title)
 
-        if not tmdb_result:
-            raise NoEntriesFoundException()
-
-        tmdb_id = tmdb_result["id"]
-        tmdb_type = tmdb_result["media_type"]
-        if tmdb_type == "movie":
-            movie = tmdb.Movies(tmdb_id)
-            tmdb_data = movie.info()
-
-            for k, v in additional_movie_info(movie).items():
-                tmdb_data[k] = v
-
-        elif tmdb_type == "tv":
-            tv = tmdb.TV(tmdb_id)
-            tmdb_data = tv.info()
-        else:
-            continue
+        if tmdb_result:
+            tmdb_type = tmdb_result["media_type"]
+            if tmdb_type == "movie":
+                tmdb_data = get_movie_data(tmdb_result)
+            elif tmdb_type == "tv":
+                # tv = tmdb.TV(tmdb_id)
+                # tmdb_data = tv.info()
+                pass
+            else:
+                continue
 
         update_notion_page(page_id, tmdb_data)
 

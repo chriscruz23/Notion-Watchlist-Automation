@@ -1,5 +1,4 @@
 .env
-testing.ipynb
-"TMDB Data"
-"Notion Response"
-"Image Data"
+*.ipynb
+Data_JSON/
+Notion Response
