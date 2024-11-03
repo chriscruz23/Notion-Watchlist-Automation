@@ -1,4 +1,7 @@
 .env
 *.ipynb
-Data_JSON/
-Notion Response
+scratch
+logs
+env
+__pycache__
+WatchlistAutomationDemo
